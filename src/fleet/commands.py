@@ -617,6 +617,9 @@ SHORT = {
     "five_hour": "5h",
     "seven_day": "7d",
     "on_demand": "on-dem",
+    "included": "incl",
+    "auto": "auto",
+    "api": "api",
 }
 """Column heads. The full label belongs in `fleet limits`; here every account has to fit
 on one line."""
@@ -637,7 +640,8 @@ def _soonest(buckets) -> str:
     if not live:
         return ""
     b = min(live, key=lambda b: b.remaining)
-    return f"{SHORT.get(b.id, b.label or b.id)} in {_until(b.resets_at)}"
+    # ⚠ `_until` already says "in 2d21h". Adding another one gave "gem wk in in 2d21h".
+    return f"{SHORT.get(b.id, b.label or b.id)} {_until(b.resets_at)}"
 
 
 def _strip(name: str, cap, running: dict) -> list[str]:
