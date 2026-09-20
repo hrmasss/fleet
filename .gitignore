@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# go
+board/fleet-board
+board/fleet-board.exe
+
+# local state — never committed, the ledger lives on the box
+*.db
+*.jsonl
+.env
+fleet-board-linux
+
+# a filled-in config never belongs in the repo
+config.toml

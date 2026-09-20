@@ -1,0 +1,62 @@
+# fleet configuration — copy to ~/.config/fleet/config.toml and fill in your own.
+#
+# Nothing here has a working default. fleet refuses to start rather than guess, because a
+# dispatcher quietly running its production checks against the wrong containers is worse
+# than one that will not start.
+#
+# Every [project] value can also come from the environment (FLEET_REPO, FLEET_WORKSPACE,
+# and so on) and the environment wins. That is not a convenience: a runner wrapper runs in
+# a tmux pane, which inherits the tmux *server's* environment rather than the dispatcher's,
+# so the wrapper has to be able to state its coordinates outright.
+
+[project]
+# GitHub owner/name. Passed to `gh --repo`, so `gh` must be authenticated for it.
+repo = "owner/app"
+
+# The repo holding session files. This is the work record, not the code.
+workspace = "~/projects/app-workspace"
+
+# A local clone of the code repo. Read only, to resolve short shas and test ancestry.
+code_repo = "~/projects/app-workspace/code"
+
+# SSH alias for the production box. `ssh <prod_host> docker ps` has to work.
+prod_host = "prod"
+
+# ⚠ Exact container names, never substrings. A `app-staging-web-1` beside an `app-web-1`
+# on the same daemon means a substring match reads staging as production and reports a
+# deploy that never happened.
+prod_containers = ["app-web-1", "app-api-1"]
+
+# Workflow names as `gh run list --workflow` wants them.
+build_workflow = "images"
+deploy_workflow = "deploy"
+
+# Image tags are this prefix plus the short commit: ghcr.io/owner/app:sha-789c359
+tag_prefix = "sha-"
+
+# Where session files live inside the workspace.
+sessions_subdir = "todo/sessions"
+
+
+# Runners. A section that is absent, or enabled = false, means the runner is not part of
+# this installation and will not appear on the board at all.
+#
+# `floor` is the fraction of an allowance below which an account takes no new work. It
+# should sit slightly above whatever in-session guard the agent has of its own, so fleet
+# stops handing out work just before the agent starts refusing it — landing in the gap
+# produces a session that starts, works for a minute and is then blocked mid-task.
+
+[runners.agy]
+enabled = true
+per_account = 2      # concurrent sessions per signed-in profile
+floor = 0.10         # of the emptiest Gemini bucket
+
+[runners.claude]
+enabled = true
+concurrent = 2
+floor = 0.25         # of either the five-hour or the seven-day window
+
+[runners.cursor]
+enabled = true
+concurrent = 1
+floor = 0.05         # of whichever plan line the requested model bills

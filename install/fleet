@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# fleet — run the dispatch queue on this machine.
+#
+# Put this on PATH as `fleet`. Project coordinates live in ~/.config/fleet/config.toml,
+# not here, so this file is the same on every box and carries no secrets.
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+exec uv run --project "${FLEET_SRC:-$HOME/projects/fleet}" --quiet fleet "$@"

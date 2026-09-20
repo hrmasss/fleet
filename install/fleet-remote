@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# fleet — drive the queue on another machine, from your workstation.
+#
+# The whole client. There is no service, no port and no token: ssh already exists and the
+# key is already there, and a remote control surface that needs its own authentication is
+# a second thing to get wrong.
+#
+# Install as `fleet` on the workstation. The box it talks to is $FLEET_BOX, or the one
+# line in ~/.config/fleet/box — a host alias, not a hostname, so ssh config owns the user,
+# the port and the key.
+#
+# ⚠ PATH is set explicitly on the far side. An ssh command runs a non-login shell, which
+# does not carry ~/.local/bin on most setups. Relying on the remote profile is how this
+# silently stops working the next time a dotfile changes.
+#
+# Reading is never refused. Moving the foreman's autonomy rung or releasing a brake is
+# refused over ssh and has to be done at the box, on purpose.
+set -euo pipefail
+box="${FLEET_BOX:-$(cat "$HOME/.config/fleet/box" 2>/dev/null || true)}"
+[ -n "$box" ] || { echo "fleet: set \$FLEET_BOX or write the ssh alias to ~/.config/fleet/box" >&2; exit 2; }
+exec ssh "$box" "PATH=\$HOME/.local/bin:\$PATH FLEET_ACTOR=${FLEET_ACTOR:-${USER:-someone}}@$(hostname -s 2>/dev/null || echo local) fleet $*"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fleet-board — the board, running on the box where the panes are.
+#
+# -t because it is a TUI, and because attaching to a session from inside the board only
+# works where tmux is, which is why the board runs there rather than here.
+set -euo pipefail
+box="${FLEET_BOX:-$(cat "$HOME/.config/fleet/box" 2>/dev/null || true)}"
+[ -n "$box" ] || { echo "fleet-board: set \$FLEET_BOX or write the ssh alias to ~/.config/fleet/box" >&2; exit 2; }
+exec ssh -t "$box" 'PATH=$HOME/.local/bin:$PATH fleet-board'
