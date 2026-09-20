@@ -13,7 +13,7 @@ import time
 from fleet import gate, scheduler
 from fleet import session as sessions
 from fleet.adapters import registry
-from fleet.ledger import Ledger, State
+from fleet.ledger import SETTLED, Ledger, State
 from fleet.paths import ledger_path, read_cap
 from fleet.project import Project
 
@@ -277,13 +277,8 @@ def status(as_json: bool) -> int:
         if c.reason:
             print(f"{name:<7} unavailable: {c.reason}")
             continue
-        # Show what dispatch actually counts, not just fleet's own. A board reading 0/2
-        # while eight sessions are live is a board that gets ignored.
-        bits = [
-            f"{a} {max(running.get((name, a), 0), c.observed.get(a, 0))}/{n}"
-            for a, n in c.per_account.items()
-        ]
-        print(f"{name:<7} {'  '.join(bits)}")
+        for line in _strip(name, c, running):
+            print(line)
     print()
     if not items:
         print("queue empty")
@@ -612,6 +607,126 @@ def _until(ts: float | None) -> str:
     if d < 86400:
         return f"in {d // 3600}h{(d % 3600) // 60:02d}"
     return f"in {d // 86400}d{(d % 86400) // 3600:02d}h"
+
+
+SHORT = {
+    "gemini-5h": "gem 5h",
+    "gemini-weekly": "gem wk",
+    "3p-5h": "3p 5h",
+    "3p-weekly": "3p wk",
+    "five_hour": "5h",
+    "seven_day": "7d",
+    "on_demand": "on-dem",
+}
+"""Column heads. The full label belongs in `fleet limits`; here every account has to fit
+on one line."""
+
+
+def _cell(b) -> str:
+    """What a bucket reads. A runner that metered nothing says so rather than showing a
+    blank, because a blank and a full tank must never look the same."""
+    if b.remaining is None:
+        return (b.brief or "—").strip()
+    return f"{b.remaining * 100:.0f}%"
+
+
+def _soonest(buckets) -> str:
+    """The one reset worth printing: the emptiest bucket that is not already full. A full
+    tank's refill time tells you nothing, and four of them per row is a wall of text."""
+    live = [b for b in buckets if b.remaining is not None and b.remaining < 1 and b.resets_at]
+    if not live:
+        return ""
+    b = min(live, key=lambda b: b.remaining)
+    return f"{SHORT.get(b.id, b.label or b.id)} in {_until(b.resets_at)}"
+
+
+def _strip(name: str, cap, running: dict) -> list[str]:
+    """One small table per runner: slots used, what each allowance has left, next reset.
+
+    ⚠ The same numbers the TUI shows. `fleet status` used to print slots alone, so the
+    text board and the TUI disagreed about what you were looking at — and what gates the
+    next dispatch is what an account has left, which makes it part of the status rather
+    than a separate question.
+
+    Widths come from the widest thing that must sit in each column, so the figures line up
+    down the page and can be scanned without being read.
+    """
+    accounts = list(cap.per_account.items())
+    if not accounts:
+        return [f"{name:<7} no accounts"]
+
+    label_w = max([4] + [len(a) for a, _ in accounts if a != "default"])
+    cols = cap.quota.get(accounts[0][0], [])
+    heads = [SHORT.get(b.id, b.label or b.id) for b in cols]
+    widths = list(map(len, heads))
+    for _, buckets in cap.quota.items():
+        for i, b in enumerate(buckets):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(_cell(b)))
+
+    indent, slot_w, gap = 2, 5, 3
+    out = []
+    if heads:
+        pad = " " * (indent + label_w + 1 + slot_w + gap - len(name) - indent)
+        out.append(
+            " " * indent
+            + name
+            + pad
+            + "  ".join(h.rjust(w) for h, w in zip(heads, widths, strict=False))
+        )
+    else:
+        out.append(" " * indent + name)
+
+    for account, ceiling in accounts:
+        # Show what dispatch actually counts, not just fleet's own. A board reading 0/2
+        # while eight sessions are live is a board that gets ignored.
+        busy = max(running.get((name, account), 0), cap.observed.get(account, 0))
+        label = "" if account == "default" else account
+        row = " " * indent + f"{label:<{label_w}} " + f"{busy}/{ceiling}".rjust(slot_w) + " " * gap
+        buckets = cap.quota.get(account, [])
+        if not buckets:
+            out.append(row + (cap.detail.get(account) or "no usage reported"))
+            continue
+        row += "  ".join(_cell(b).rjust(w) for b, w in zip(buckets, widths, strict=False))
+        if note := _soonest(buckets):
+            row += "   " + note
+        out.append(row)
+    return out
+
+
+def clear(sessions: list[str], everything: bool, older_than: int) -> int:
+    """Drop settled sessions from the board.
+
+    ⚠ Only settled ones. A running or verifying session is never dropped, whatever is
+    asked: the row is what the wrapper reports back into and what the watchdog reconciles
+    against, so removing it mid-flight orphans a live agent that nothing is counting.
+
+    Clearing is cosmetic and local. The work record is the session file in the workspace
+    repo, which fleet never writes, so nothing here loses anything — a cleared session can
+    be re-added and it starts over from its file.
+    """
+    led, _ = _open()
+    cutoff = time.time() - older_than * 3600 if older_than else None
+    states = set(SETTLED) if everything else {State.DONE}
+
+    dropped, refused = [], []
+    for it in led.all():
+        if sessions and it.session not in sessions:
+            continue
+        if it.state not in states:
+            if sessions:
+                refused.append(f"{it.session} is {it.state.value}")
+            continue
+        if cutoff is not None and (it.ended_at or it.queued_at) > cutoff:
+            continue
+        led.forget(it.session)
+        dropped.append(it.session)
+    led.close()
+
+    for r in refused:
+        print(f"kept: {r}", file=sys.stderr)
+    print(f"cleared {len(dropped)}" + (": " + ", ".join(dropped) if dropped else ""))
+    return 0
 
 
 def limits(as_json: bool) -> int:

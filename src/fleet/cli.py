@@ -54,6 +54,7 @@ BUILT: frozenset[str] = frozenset(
     {
         "gate",
         "add",
+        "clear",
         "start",
         "pause",
         "drain",
@@ -80,6 +81,7 @@ PHASES: dict[str, int] = {
     "pause": 2,
     "drain": 2,
     "park": 2,
+    "clear": 2,
     "status": 2,
     "show": 2,
     "log": 2,
@@ -100,6 +102,7 @@ VERBS: dict[str, str] = {
     "pause": "stop dispatching, leave what is running alone",
     "drain": "finish what is running, start nothing new",
     "park": "take a session out of the queue by hand",
+    "clear": "drop settled sessions from the board",
     "status": "the board, as a table or --json",
     "show": "one session: state, attempts, last verdict, how to attach",
     "log": "tail a session's transcript",
@@ -142,6 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s["gate"].add_argument("sessions", nargs="+", metavar="SESSION")
     s["gate"].add_argument("--json", action="store_true")
+
+    s["clear"].add_argument("sessions", nargs="*", metavar="SESSION")
+    s["clear"].add_argument(
+        "--all", action="store_true", help="also drop what needs you and what is parked"
+    )
+    s["clear"].add_argument("--older-than", type=int, default=0, metavar="HOURS")
 
     s["add"].add_argument("sessions", nargs="*", metavar="SESSION")
     s["add"].add_argument(
@@ -276,6 +285,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return commands.check(ns.sessions, ns.json)
         case "add":
             return commands.add(ns.sessions, ns.actor, ns.runner, ns.claimable, ns.model)
+        case "clear":
+            return commands.clear(ns.sessions, ns.all, ns.older_than)
         case "start":
             return commands.start(ns.parallel)
         case "tick":

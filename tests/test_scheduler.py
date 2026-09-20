@@ -836,3 +836,34 @@ def test_no_cap_means_the_runner_ceilings_decide(world, monkeypatch, tmp_path):
         write_session(sessions, sid)
         led.add(sid)
     assert len(sch.tick().dispatched) == 3
+
+
+def test_clear_never_drops_a_live_session(world, monkeypatch, tmp_path):
+    """⚠ A running or verifying row is what the wrapper reports back into and what the
+    watchdog reconciles against. Dropping one mid-flight orphans a live agent that nothing
+    is counting any more, so `clear` refuses however it is asked."""
+    from fleet import commands
+    from fleet.ledger import State
+
+    project, sessions = world
+    led = Ledger(project.workspace / "ledger.db")
+    monkeypatch.setattr(commands, "_open", lambda: (led, None))
+    monkeypatch.setattr(led, "close", lambda: None)
+
+    for sid in ("ux-1", "ux-2", "ux-3"):
+        write_session(sessions, sid)
+        led.add(sid)
+    led.claim("ux-1")  # running
+    led.transition("ux-2", State.DONE)
+    led.transition("ux-3", State.PARKED)
+
+    commands.clear([], everything=False, older_than=0)
+    left = {i.session for i in led.all()}
+    assert left == {"ux-1", "ux-3"}, "done goes, running and parked stay"
+
+    commands.clear([], everything=True, older_than=0)
+    assert {i.session for i in led.all()} == {"ux-1"}, "still not the running one"
+
+    commands.clear(["ux-1"], everything=True, older_than=0)
+    assert {i.session for i in led.all()} == {"ux-1"}, "naming it explicitly changes nothing"
+    led.close()

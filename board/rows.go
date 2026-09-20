@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -125,7 +126,10 @@ func (m model) rowsView(width, budget int) string {
 		var rows []item
 		for _, want := range g.states {
 			for _, it := range m.st.Items {
-				if it.State == want {
+				// ⚠ Done is capped to the last day, matching the count in the header. What
+				// shipped last week is not something to scroll past on the way to what needs
+				// you now, and the header said "6 done today" over a list of thirty.
+				if it.State == want && (want != "done" || recent(it.EndedAt)) {
 					rows = append(rows, it)
 				}
 			}
@@ -234,4 +238,10 @@ func family(model string) string {
 		return model[:i]
 	}
 	return model
+}
+
+// recent is the window the Done group shows. Anything older is still in the ledger and
+// still in `fleet status`; it has just stopped competing for the screen.
+func recent(ts float64) bool {
+	return ts > float64(time.Now().Add(-24*time.Hour).Unix())
 }
