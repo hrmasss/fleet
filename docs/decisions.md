@@ -577,3 +577,36 @@ than published: spend divided by (auto% + api%) gives it, and both accounts agre
 cent. `limit` is the nominal $20 plan and the percentages are not fractions of it, which
 is how the board came to print "82% left" beside "$16.25 of $20.00" — two numbers that
 cannot both be true. It prints the derived allowance now.
+
+## the claude session count was always zero, and nobody noticed for a day
+
+2026-09-20. A session started from `claude agents` had been working for 47 minutes with a
+PR open. The board said the runner was idle.
+
+The adapter counted processes matching `claude --dangerously-skip-permissions`. That is
+what you type. It is not what runs: `claude` is a shim that execs the versioned binary, so
+those two words never appear together on any command line and the count was **always
+zero**. Every claude session fleet had ever shown came from its own ledger. It had never
+once seen a session anybody else started.
+
+The agy adapter learned this the day before — eight hand-dispatched sessions it had never
+heard of — and the lesson was applied to one adapter instead of all three. The rule is
+about the class, not the instance: **what you launch a thing with is not what the OS shows
+running**, and an adapter has to be told what a live session looks like from outside.
+
+It matches the install path now, minus the three helpers Claude Code puts beside each
+session — a daemon, a pty host and a spare, all carrying that same path. Counting the path
+alone turns one session into four and shuts the ceiling on nothing. Cursor turned out to be
+correct by luck: its process is `agent`, not `cursor-agent`, but the versioned path on its
+command line contains the string anyway.
+
+Two display faults fell out of the same investigation.
+
+**A ceiling of zero is not a runner that does not exist.** A runner reporting a reason was
+collapsed to one line, so claude showed as `unavailable: 7 day at 20%` with no accounts, no
+quota and no sign of the session running on it. Only a runner with no accounts at all is
+one line now; a reason prints under the rows rather than instead of them.
+
+**A slot held by somebody else now says so.** The count always included foreign sessions —
+it is `max(ours, observed)` — but a silent `2/2` sends you looking for a row that was never
+going to be there. Both surfaces append `(n not ours)`.
