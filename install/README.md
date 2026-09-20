@@ -48,6 +48,31 @@ port and the key and none of that is repeated here.
 Optional, and per-shell. `fls` is the board, `fls -t` the TUI, `flu` what every account has
 left, `fla <session>` attaches to that session's pane. See `docs/design.md`.
 
+## What each runner needs
+
+The adapters shell out. `claude` and `cursor-agent` are the vendors' own CLIs and that is
+all the `claude` and `cursor` runners need beyond being signed in.
+
+⚠ **The `agy` runner also needs two helpers that are not in this repo**, because multiple
+Antigravity accounts on one machine is not something the CLI supports on its own:
+
+| command | contract |
+|---|---|
+| `agya <profile> [args…]` | run the CLI against one profile. A profile is a `--gemini_dir`. |
+| `agy-next --status` | one line per signed-in profile: `<name> last <ago> <buckets>`, with `PARKED` or `SPENT` where it applies |
+| `agy-next --limited <p>` | park a profile after a quota error |
+
+`cursora <profile> [args…]` is the same idea for `cursor-agent`, whose profile is an
+`XDG_CONFIG_HOME` pointing at a directory holding `cursor/auth.json`.
+
+⚠ Whatever you write for `cursora`, make the profile directory an **overlay**, not an empty
+config dir. `XDG_CONFIG_HOME` is inherited by every command the agent runs, so a bare
+directory takes `gh`, `gcloud` and everything else in `~/.config` away from the session —
+and an agent that cannot open a PR is worse than one account.
+
+If you only run one account per runner, none of this applies: point `agya` at a one-line
+wrapper, or run claude and cursor alone.
+
 ## What is not here
 
 No secrets, no service, no port and no token. fleet reads the credentials each agent CLI
