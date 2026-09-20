@@ -274,11 +274,18 @@ def status(as_json: bool) -> int:
         live = len([i for i in items if i.live])
         print(f"cap     {live}/{limit} running")
     for name, c in caps.items():
-        if c.reason:
+        # ⚠ A reason is not a substitute for the rows. A runner whose ceiling has dropped
+        # to zero still has accounts, still has quota worth reading, and may still have
+        # sessions running on it — on 2026-09-20 claude was reported as one line of
+        # "unavailable" while a session it did not start had been working for 47 minutes.
+        # Only a runner with no accounts at all is a single line.
+        if c.reason and not c.per_account:
             print(f"{name:<7} unavailable: {c.reason}")
             continue
         for line in _strip(name, c, running):
             print(line)
+        if c.reason:
+            print(f"{'':<7}  {c.reason}")
     print()
     if not items:
         print("queue empty")

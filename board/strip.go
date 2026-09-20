@@ -222,6 +222,9 @@ func (m model) strip() string {
 			}
 			out = append(out, line)
 		}
+		if r.Reason != "" {
+			out = append(out, strings.Repeat(" ", indent+2)+dim.Render(r.Reason))
+		}
 		out = append(out, "")
 	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
