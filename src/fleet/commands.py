@@ -684,16 +684,25 @@ def _strip(name: str, cap, running: dict) -> list[str]:
     for account, ceiling in accounts:
         # Show what dispatch actually counts, not just fleet's own. A board reading 0/2
         # while eight sessions are live is a board that gets ignored.
-        busy = max(running.get((name, account), 0), cap.observed.get(account, 0))
+        # ⚠ Say when a slot is held by something fleet did not start. The count already
+        # included them — it is `max(ours, observed)` — but a board that silently reports
+        # 2/2 when one of the two is somebody else's hand-started session is a board that
+        # sends you looking for a row that was never going to be there.
+        ours = running.get((name, account), 0)
+        busy = max(ours, cap.observed.get(account, 0))
+        foreign = max(0, busy - ours)
         label = "" if account == "default" else account
         row = " " * indent + f"{label:<{label_w}} " + f"{busy}/{ceiling}".rjust(slot_w) + " " * gap
         buckets = cap.quota.get(account, [])
         if not buckets:
-            out.append(row + (cap.detail.get(account) or "no usage reported"))
+            tail = cap.detail.get(account) or "no usage reported"
+            out.append(row + tail + (f"   ({foreign} not ours)" if foreign else ""))
             continue
         row += "  ".join(_cell(b).rjust(w) for b, w in zip(buckets, widths, strict=False))
         if note := _soonest(buckets):
             row += "   " + note
+        if foreign:
+            row += f"   ({foreign} not ours)"
         out.append(row)
     return out
 

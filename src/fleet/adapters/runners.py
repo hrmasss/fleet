@@ -230,6 +230,22 @@ class Claude:
     auto = False
     """On request. A session reaches claude by naming it, never by being next in line."""
 
+    PROCESS = "/share/claude/versions/"
+    """What a live Claude Code session looks like from outside.
+
+    ⚠ Not `claude --dangerously-skip-permissions`. That is what you type; it is not what
+    runs. `claude` is a shim that execs the versioned binary, so the flag never appears
+    beside the word `claude` on any command line, and this count was **always zero**. On
+    2026-09-20 one session started from `claude agents` had been working for 47 minutes
+    with a PR open while fleet reported the runner completely idle — every claude session
+    it had ever counted came from its own ledger, and it had never once seen anybody
+    else's. The agy adapter learned this on 2026-09-19 and claude was left with the bug.
+    """
+
+    NOT_A_SESSION = ("bg-pty-host", "bg-spare", "daemon run", "--bg-sp")
+    """Claude Code puts a daemon, a pty host and a spare beside each session, all carrying
+    the same install path. Counting the path alone turns one session into four."""
+
     def __init__(self, concurrent: int = 2, floor: float = 0.25) -> None:
         self.concurrent = concurrent
         self.floor = floor
@@ -245,7 +261,7 @@ class Claude:
         rc, _ = sh(["claude", "--version"], timeout=20)
         if rc != 0:
             return Capacity(self.name, {}, {}, reason="claude not on PATH")
-        observed = count_matching(process_lines(), "claude --dangerously-skip-permissions")
+        observed = count_matching(process_lines(), self.PROCESS, self.NOT_A_SESSION)
         buckets = quota.claude()
         spent = [b for b in buckets if b.remaining is not None and b.remaining < self.floor]
         if spent:

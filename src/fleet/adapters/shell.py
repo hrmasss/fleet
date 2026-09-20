@@ -265,14 +265,19 @@ def process_lines() -> list[str]:
     return out.splitlines() if rc == 0 else []
 
 
-def count_matching(lines: list[str], needle: str) -> int:
-    """How many live processes carry `needle` in their command line.
+def count_matching(lines: list[str], needle: str, exclude: tuple[str, ...] = ()) -> int:
+    """How many live processes carry `needle` and none of `exclude` in their command line.
 
-    ⚠ This counts sessions fleet did not start, which is the point. The box runs agents
-    dispatched by hand and by Hermes, and a scheduler that only counts its own would stack
-    its whole ceiling on top of theirs.
+    ⚠ This counts sessions fleet did not start, which is the point. A box runs agents
+    dispatched by hand and by other tooling, and a scheduler that only counts its own would
+    stack its whole ceiling on top of theirs.
+
+    ⚠ `exclude` exists because an agent CLI is not one process. Claude Code runs a session
+    as the versioned binary and puts a daemon, a pty host and a spare beside it, all with
+    the same install path on their command line. Counting the path alone turns one session
+    into four and the ceiling shuts.
     """
-    return sum(1 for line in lines if needle in line)
+    return sum(1 for line in lines if needle in line and not any(x in line for x in exclude))
 
 
 def count_by_env(var: str, value: str, needle: str) -> int:

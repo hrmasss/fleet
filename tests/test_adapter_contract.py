@@ -67,7 +67,7 @@ def test_claude_stops_dispatching_before_its_window_runs_out(monkeypatch, five_h
     """
     monkeypatch.setattr(runners, "sh", lambda *a, **k: (0, "2.0.0"))
     monkeypatch.setattr(runners, "process_lines", lambda: [])
-    monkeypatch.setattr(runners, "count_matching", lambda lines, needle: 0)
+    monkeypatch.setattr(runners, "count_matching", lambda lines, needle, exclude=(): 0)
     monkeypatch.setattr(
         runners.quota,
         "claude",
@@ -97,7 +97,7 @@ def test_agy_counts_the_weekly_bucket_not_only_the_five_hour(
         runners, "sh", lambda *a, **k: (0, "  main   last 2h ago    gemini-5h 100% weekly 3%")
     )
     monkeypatch.setattr(runners, "process_lines", lambda: [])
-    monkeypatch.setattr(runners, "count_matching", lambda lines, needle: 0)
+    monkeypatch.setattr(runners, "count_matching", lambda lines, needle, exclude=(): 0)
     monkeypatch.setattr(
         runners.quota,
         "agy",
@@ -156,7 +156,7 @@ def test_an_account_out_of_gemini_can_still_take_a_claude_session(monkeypatch, m
         runners, "sh", lambda *a, **k: (0, "  a1   last 2h ago    gemini-5h 100% weekly 3%")
     )
     monkeypatch.setattr(runners, "process_lines", lambda: [])
-    monkeypatch.setattr(runners, "count_matching", lambda lines, needle: 0)
+    monkeypatch.setattr(runners, "count_matching", lambda lines, needle, exclude=(): 0)
     monkeypatch.setattr(
         runners.quota,
         "agy",
@@ -181,3 +181,39 @@ def test_a1_still_answers_to_the_directory_it_had_as_main():
     assert dirs[1].endswith("/.gemini")
     assert runners.Agy._dirs("a4") == [runners.Agy._dir("a4")]
     assert "main" not in runners.Agy._dir("a1")
+
+
+# Real `ps -eo args=` output from the box on 2026-09-20: one working session from
+# `claude agents`, with the three helper processes Claude Code puts beside it.
+CLAUDE_PS = [
+    "/home/user/.local/bin/claude daemon run --origin transient"
+    ' --spawned-by {"label":"claude --bg"}',
+    "claude bg-pty-host --bg-pty-host /tmp/cc-daemon/pty/x.sock 200 50 -- "
+    "/home/user/.local/share/claude/versions/2.1.278 --session-id abc",
+    "/home/user/.local/share/claude/versions/2.1.278 --session-id abc -n markup-configurable "
+    "--dangerously-skip-permissions",
+    "claude bg-spare --bg-spare /tmp/cc-daemon/spare/y.claim.sock",
+    "/usr/bin/zsh -c source /home/user/.claude/shell-snapshots/snapshot.sh",
+]
+
+
+def test_claude_counts_a_session_it_did_not_start(monkeypatch):
+    """⚠ This count was always zero. The old needle was `claude --dangerously-skip-permissions`,
+    which is what you type and not what runs: `claude` is a shim that execs the versioned
+    binary, so those two words never appear together on any command line. On 2026-09-20 a
+    session from `claude agents` had been working 47 minutes with a PR open while fleet
+    reported the runner idle."""
+    monkeypatch.setattr(runners, "sh", lambda *a, **k: (0, "2.0.0"))
+    monkeypatch.setattr(runners, "process_lines", lambda: CLAUDE_PS)
+    monkeypatch.setattr(runners.quota, "claude", lambda: [])
+    assert runners.Claude().capacity().observed["default"] == 1
+
+
+def test_the_helpers_beside_a_claude_session_are_not_sessions():
+    """A daemon, a pty host and a spare all carry the same install path. Counting the path
+    alone turns one session into four and the ceiling shuts on nothing."""
+    from fleet.adapters.shell import count_matching
+
+    c = runners.Claude()
+    assert count_matching(CLAUDE_PS, c.PROCESS) == 2, "the pty host carries the path too"
+    assert count_matching(CLAUDE_PS, c.PROCESS, c.NOT_A_SESSION) == 1

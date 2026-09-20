@@ -158,6 +158,12 @@ func (m model) strip() string {
 				label = ""
 			}
 			slots := fmt.Sprintf("%*s", slotW, fmt.Sprintf("%d/%d", a.Running, a.Ceiling))
+			// ⚠ A slot held by a session fleet did not start still counts, and the board
+			// has to say so. Otherwise 2/2 sends you hunting for a row that does not exist.
+			foreign := a.Running - a.Ours
+			if foreign < 0 {
+				foreign = 0
+			}
 			slotStyle := dim
 			switch {
 			case a.Ceiling == 0:
@@ -210,6 +216,9 @@ func (m model) strip() string {
 			line := prefix + strings.Join(cells, "  ")
 			if note := soonest(a); note != "" {
 				line += dim.Render("   " + note)
+			}
+			if foreign > 0 {
+				line += amber.Render(fmt.Sprintf("   (%d not ours)", foreign))
 			}
 			out = append(out, line)
 		}
