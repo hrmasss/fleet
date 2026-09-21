@@ -76,15 +76,48 @@ def sh(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
     return r.returncode, (r.stdout or r.stderr).strip()
 
 
-def tmux_spawn(name: str, command: str) -> int:
+PANE_SIZE = os.environ.get("FLEET_PANE_SIZE", "120x30")
+"""How big a dispatched pane is, as `WIDTHxHEIGHT`.
+
+⚠ Small on purpose. A pinned pane does not shrink to fit the terminal you attach from, so
+one bigger than that terminal is clipped, while one smaller is merely padded. 120x30 fits
+inside anything you would attach from; raise it only if every client you use is larger.
+"""
+
+
+def pane_size() -> tuple[int, int]:
+    try:
+        w, h = PANE_SIZE.lower().split("x")
+        return max(int(w), 20), max(int(h), 10)
+    except ValueError:
+        return 120, 30
+
+
+def tmux_spawn(name: str, command: str, fixed: bool = False) -> int:
     """Start a detached tmux session and return the pane's pid.
 
     The pid is the shell running the wrapper, not the agent binary. That is deliberate:
     the wrapper is what reports the exit, so its death is the event worth watching.
+
+    ⚠ The size is given explicitly because a detached `new-session` otherwise gets tmux's
+    `default-size`, which is 80x24. Every log was being wrapped at eighty columns and
+    every pane was drawn for a terminal nobody uses.
+
+    ⚠ `fixed` pins the window so attaching does not resize it. tmux defaults to
+    `window-size latest`, so attaching a 156x35 client to an 80x24 pane resizes the pane
+    and sends the agent a SIGWINCH. agy does not act on one: resizing a live pane from
+    200x50 to 120x30 on 2026-09-21 reflowed not a single character, so what you attach to
+    is a frame laid out for a width that is no longer there, with no prompt in it. Only a
+    runner whose log is a terminal needs this — plain text has no frame to break.
     """
-    rc, out = sh(["tmux", "new-session", "-d", "-s", name, command])
+    w, h = pane_size()
+    rc, out = sh(["tmux", "new-session", "-d", "-s", name, "-x", str(w), "-y", str(h), command])
     if rc != 0:
         raise RuntimeError(f"tmux refused to start {name}: {out}")
+    if fixed:
+        # Not fatal if it fails: the session is already running, and an unpinned pane is
+        # awkward to attach to rather than broken.
+        sh(["tmux", "setw", "-t", name, "window-size", "manual"])
     rc, out = sh(["tmux", "list-panes", "-t", name, "-F", "#{pane_pid}"])
     if rc != 0 or not out.strip().isdigit():
         raise RuntimeError(f"{name} started but has no pane pid: {out}")

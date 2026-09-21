@@ -215,7 +215,9 @@ class Agy:
             f'-p "$(cat {q(path)})"'
         )
         tmux = f"{session}-{account}"
-        pid = tmux_spawn(tmux, write_wrapper(session, cmd, log, _script_for(session)))
+        pid = tmux_spawn(
+            tmux, write_wrapper(session, cmd, log, _script_for(session)), fixed=self.tui
+        )
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
@@ -314,7 +316,9 @@ class Claude:
         pick = f"--model {q(model)} " if model else ""
         cmd = f'cd {q(workspace)} && claude {pick}--dangerously-skip-permissions "$(cat {q(path)})"'
         tmux = f"{session}-claude"
-        pid = tmux_spawn(tmux, write_wrapper(session, cmd, log, _script_for(session)))
+        pid = tmux_spawn(
+            tmux, write_wrapper(session, cmd, log, _script_for(session)), fixed=self.tui
+        )
         return Handle(self.name, session, pid, account="default", tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
@@ -441,7 +445,9 @@ class Cursor:
         pick = f"--model {q(model)} " if model else ""
         cmd = f'cd {q(workspace)} && cursora {q(account)} {pick}-f "$(cat {q(path)})"'
         tmux = f"{session}-{account}"
-        pid = tmux_spawn(tmux, write_wrapper(session, cmd, log, _script_for(session)))
+        pid = tmux_spawn(
+            tmux, write_wrapper(session, cmd, log, _script_for(session)), fixed=self.tui
+        )
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:

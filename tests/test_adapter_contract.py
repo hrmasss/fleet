@@ -314,3 +314,52 @@ def test_a_printing_runner_refuses_a_continuation():
     """base.py: a runner that cannot take one says so rather than pretending."""
     h = Handle(runner="agy", session="s", pid=1, tmux="s-a4")
     assert runners.Agy().nudge(h, "carry on") is False
+
+
+# ── attaching to what was dispatched ─────────────────────────────────────────────────
+
+
+def test_a_dispatched_pane_is_not_eighty_by_twenty_four(monkeypatch):
+    """⚠ A detached new-session takes tmux's default-size, so every pane fleet started was
+    80x24 and every log wrapped at eighty columns."""
+    from fleet.adapters import shell
+
+    calls = []
+
+    def fake_sh(cmd, timeout=30):
+        calls.append(cmd)
+        return (0, "4242") if "list-panes" in cmd else (0, "")
+
+    monkeypatch.setattr(shell, "sh", fake_sh)
+    shell.tmux_spawn("ux-1-a4", "bash /tmp/run.sh")
+
+    new = next(c for c in calls if "new-session" in c)
+    w, h = shell.pane_size()
+    assert ["-x", str(w), "-y", str(h)] == new[new.index("-x") : new.index("-x") + 4]
+
+
+def test_only_a_terminal_pane_is_pinned_against_the_resize_on_attach(monkeypatch):
+    """⚠ tmux defaults to window-size latest, so attaching resizes the pane and the agent
+    gets a SIGWINCH. agy does not redraw on one — a live pane resized from 200x50 to
+    120x30 reflowed nothing — so you attach to a frame drawn for a width that is gone."""
+    from fleet.adapters import shell
+
+    def run(fixed):
+        calls = []
+
+        def fake_sh(cmd, timeout=30):
+            calls.append(cmd)
+            return (0, "4242") if "list-panes" in cmd else (0, "")
+
+        monkeypatch.setattr(shell, "sh", fake_sh)
+        shell.tmux_spawn("ux-1-a4", "bash /tmp/run.sh", fixed=fixed)
+        return any("window-size" in c for c in calls)
+
+    assert run(True), "a TUI pane must not be resized under the agent"
+    assert not run(False), "plain text has no frame to break; leave it tracking the client"
+
+
+def test_the_runner_that_shows_a_terminal_is_the_one_that_gets_pinned():
+    """Same flag drives both: what liveness must discount, and what attach must not resize."""
+    pinned = {n for n, a in registry().items() if getattr(a, "tui", False)}
+    assert pinned == {"cursor"}, "agy prints with -p now; claude was never interactive"

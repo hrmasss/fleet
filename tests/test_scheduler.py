@@ -867,3 +867,25 @@ def test_clear_never_drops_a_live_session(world, monkeypatch, tmp_path):
     commands.clear(["ux-1"], everything=True, older_than=0)
     assert {i.session for i in led.all()} == {"ux-1"}, "naming it explicitly changes nothing"
     led.close()
+
+
+def test_a_settled_row_stops_offering_a_pane_to_attach_to(tmp_path):
+    """⚠ The board offers attach on any row carrying a tmux name and never asks whether
+    that session still exists. On 2026-09-21 five finished panes were reaped and their
+    rows kept the name, so pressing enter ran `tmux attach -t fa-12-a4` against a session
+    killed hours earlier: exit 1, straight back to the board, looking like a dead key."""
+    from fleet.ledger import Ledger, State
+
+    led = Ledger(tmp_path / "ledger.db")
+    led.add("ux-1")
+    led.claim("ux-1")
+    led.launched("ux-1", "agy", "a4", 4242, "ux-1-a4", "/tmp/ux-1.log")
+    assert led.get("ux-1").tmux == "ux-1-a4", "while it runs, the pane is real"
+
+    led.transition("ux-1", State.VERIFYING, kind="exited")
+    it = led.get("ux-1")
+    assert it.tmux is None and it.pid is None, "the process is gone; so is its handle"
+
+    led.transition("ux-1", State.NEEDS_YOU, note="gate could not read the PR")
+    assert led.get("ux-1").tmux is None
+    led.close()

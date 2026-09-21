@@ -304,10 +304,17 @@ class Ledger:
         kind: str | None = None,
     ) -> None:
         ended = time.time() if state in (State.DONE, State.NEEDS_YOU, State.PARKED) else None
+        # ⚠ The handle is only meaningful while the row is running. Every other state is
+        # reached because the process is gone, and a tmux name that outlives its pane is
+        # not harmless: the board offers attach on any row that has one, so pressing enter
+        # ran `tmux attach -t fa-12-a4` against a session killed hours earlier, which
+        # exits 1 and drops you straight back looking like the key did nothing.
+        clear = "" if state is State.RUNNING else ", pid=NULL, tmux=NULL"
         with self._write() as db:
             db.execute(
                 "UPDATE items SET state=?, verdict=COALESCE(?, verdict), "
-                "note=COALESCE(?, note), ended_at=COALESCE(?, ended_at) WHERE session=?",
+                f"note=COALESCE(?, note), ended_at=COALESCE(?, ended_at){clear} "
+                "WHERE session=?",
                 (state.value, verdict, note, ended, session),
             )
         self.record(session, kind or state.value, note or verdict or "")
