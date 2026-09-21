@@ -487,7 +487,7 @@ WRAPPER = """#!/usr/bin/env bash
 # itself, so the next session starts without anything polling.
 set -o pipefail
 {exports}
-{runner_cmd} 2>&1 | tee {log}
+{runner_cmd} 2>&1 | {filter}tee {log}
 rc=${{PIPESTATUS[0]}}
 {fleet} event exited --session {session_q} --rc "$rc"
 {fleet} tick
@@ -501,6 +501,7 @@ def write_wrapper(
     script: str,
     fleet_bin: str = "fleet",
     env: dict[str, str] | None = None,
+    filter_cmd: str | None = None,
 ) -> str:
     """Write the wrapper as a bash script and return the command tmux should run.
 
@@ -518,6 +519,12 @@ def write_wrapper(
 
     Writing a file rather than a one-liner removes the quoting risk as well: a brief is
     thousands of words of prose, and the command line was never the right place for it.
+
+    ⚠ `filter_cmd` goes between the agent and the tee, for a runner that speaks a machine
+    format. It sits here rather than inside `runner_cmd` so that `2>&1` still belongs to
+    the agent — otherwise the agent's stderr, which is where `agya` announces the account
+    it picked, would reach the pane and never the log. `PIPESTATUS[0]` is unaffected: it
+    is the first element either way.
     """
     q = shlex.quote
     pairs = (env if env is not None else fleet_env()).items()
@@ -529,6 +536,7 @@ def write_wrapper(
         runner_cmd=runner_cmd,
         log=q(log),
         fleet=q(fleet_bin),
+        filter=f"{filter_cmd} | " if filter_cmd else "",
     )
     path = Path(script)
     path.parent.mkdir(parents=True, exist_ok=True)

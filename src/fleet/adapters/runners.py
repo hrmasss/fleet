@@ -63,13 +63,24 @@ class Agy:
     cannot land on one account, and parks a profile for five hours after a limit error.
     Reimplementing any of that here would be a second opinion about the same facts.
 
-    ⚠ It runs with `-p`, not `-i`. Interactive agy does not exit when a turn ends — it
-    returns to its prompt and holds the pane open, which on 2026-09-21 left five finished
-    sessions sitting on their slots for up to nineteen hours with their work already
-    merged and deployed. `-p` exits, so the wrapper reports and the slot comes back. The
-    cost is that a `-p` run cannot be nudged and kills its own background tasks on the way
-    out, so a brief must carry everything it needs and say to keep commands in the
-    foreground.
+    ⚠ It runs with `-p --output-format stream-json`, and each half of that is load
+    bearing. All three ways of running it were measured on 2026-09-21:
+
+        -i                 never exits. Five finished sessions held their slots for up to
+                           nineteen hours. It also never draws its interface in a detached
+                           pane, so attaching gives you scrollback and no prompt — and not
+                           because of anything here: two panes dispatched by hand, no
+                           wrapper and no pipe near them, were just as blank.
+        -p                 exits, but says nothing until the turn ends. Zero bytes for
+                           ninety seconds, then 312 at once. Empty pane, empty log, and
+                           the liveness text signal blind for the whole run.
+        -p stream-json     exits *and* speaks while it works: 1.4 KB by ten seconds. It
+                           is NDJSON, so `fleet render` turns it back into text in the
+                           wrapper pipeline, ahead of the tee.
+
+    The cost of print mode either way is that the run cannot be nudged and kills its own
+    background tasks on exit, so a brief must carry everything and say to keep commands in
+    the foreground.
     """
 
     name = "agy"
@@ -212,11 +223,13 @@ class Agy:
         pick = f"--model {q(model)} " if model else ""
         cmd = (
             f"cd {q(workspace)} && agya {q(account)} {pick}--dangerously-skip-permissions "
-            f'-p "$(cat {q(path)})"'
+            f'--output-format stream-json -p "$(cat {q(path)})"'
         )
         tmux = f"{session}-{account}"
         pid = tmux_spawn(
-            tmux, write_wrapper(session, cmd, log, _script_for(session)), fixed=self.tui
+            tmux,
+            write_wrapper(session, cmd, log, _script_for(session), filter_cmd="fleet render"),
+            fixed=self.tui,
         )
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 

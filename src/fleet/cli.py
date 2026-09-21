@@ -70,6 +70,7 @@ BUILT: frozenset[str] = frozenset(
         "digest",
         "brake",
         "limits",
+        "render",
     }
 )
 """Verbs with behaviour. Everything else exits 3 naming its phase."""
@@ -93,6 +94,7 @@ PHASES: dict[str, int] = {
     "brake": 3,
     "digest": 4,
     "limits": 4,
+    "render": 2,
 }
 
 VERBS: dict[str, str] = {
@@ -114,6 +116,7 @@ VERBS: dict[str, str] = {
     "brake": "show or move the brakes: the kill file and the attempt cap",
     "digest": "compose the end-of-day summary",
     "limits": "what every account has left, and when it resets",
+    "render": "make a runner's NDJSON stream readable (called by the wrapper, not by you)",
 }
 
 
@@ -278,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 3
 
-    from fleet import commands
+    from fleet import commands, render
 
     match ns.verb:
         case "gate":
@@ -313,6 +316,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return commands.brake(ns.stop, ns.release)
         case "limits":
             return commands.limits(ns.json)
+        case "render":
+            return render.main()
         case "pause" | "drain":
             return _pause(ns.note, drain=ns.verb == "drain")
     return 3
