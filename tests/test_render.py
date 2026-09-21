@@ -116,3 +116,27 @@ def test_the_filter_sits_between_the_agent_and_the_tee(tmp_path):
     piped = script.read_text(encoding="utf-8")
     assert "agya a4 -p x 2>&1 | fleet render | tee" in piped
     assert "rc=${PIPESTATUS[0]}" in piped, "the agent is still the first element"
+
+
+def test_a_tool_call_does_not_land_on_the_end_of_the_last_sentence():
+    """⚠ Observed in the first live run: `Completed listing.● run_command(date -u)`.
+    Prose arrives as fragments that rarely end in a newline, so a structural line has to
+    close the one before it."""
+    src = io.StringIO(
+        "\n".join(
+            [
+                ev(
+                    event="step_update",
+                    step_update={
+                        "state": "ACTIVE",
+                        "step_type": "agent_response",
+                        "text_delta": "Completed listing.",
+                    },
+                ),
+                tool("ACTIVE", CommandLine="date -u"),
+            ]
+        )
+    )
+    out = io.StringIO()
+    render(src, out)
+    assert out.getvalue() == "Completed listing.\n● run_command(date -u)\n"

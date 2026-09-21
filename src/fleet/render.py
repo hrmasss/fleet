@@ -66,7 +66,7 @@ def line_for(event: dict) -> str | None:
         status = r.get("status", "?")
         secs = r.get("duration_seconds")
         took = f" in {secs:.0f}s" if isinstance(secs, (int, float)) else ""
-        return f"\n── {status}{took}\n"
+        return f"── {status}{took}\n"
 
     if kind != "step_update":
         return None
@@ -93,29 +93,41 @@ def render(source: IO[str], out: IO[str]) -> int:
     ⚠ Flushed every line. The whole point is that the pane fills while the agent works,
     and Python's default block buffering on a pipe would hold it all back to the end —
     which is the exact failure this replaces.
+
+    ⚠ It tracks whether the last write finished its line, because prose arrives as
+    fragments that rarely end in a newline. Without that, the next tool call lands on the
+    end of the last sentence: `Completed listing.● run_command(date -u)`.
     """
+    at_line_start = True
+
+    def emit(text: str, structural: bool) -> None:
+        nonlocal at_line_start
+        if structural and not at_line_start:
+            out.write("\n")
+            at_line_start = True
+        out.write(text)
+        at_line_start = text.endswith("\n")
+        out.flush()
+
     for raw in source:
         stripped = raw.strip()
         if not stripped:
             continue
-        if not stripped.startswith("{"):
-            out.write(raw)  # not ours: agya's rotation notice, a traceback, anything
-            out.flush()
-            continue
-        try:
-            event = json.loads(stripped)
-        except json.JSONDecodeError:
-            out.write(raw)
-            out.flush()
-            continue
-        if not isinstance(event, dict):
-            out.write(raw)
-            out.flush()
+        event = None
+        if stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            event = parsed if isinstance(parsed, dict) else None
+        if event is None:
+            # Not ours: agya's rotation notice, a traceback, anything at all. Passed
+            # through rather than dropped.
+            emit(raw if raw.endswith("\n") else raw + "\n", structural=True)
             continue
         text = line_for(event)
         if text:
-            out.write(text)
-            out.flush()
+            emit(text, structural=text.endswith("\n"))
     return 0
 
 
