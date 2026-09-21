@@ -21,8 +21,13 @@ for free as long as ccmux knows about its agent.
 were live on the box and not one had ever written a marker, while claude and cursor wrote
 theirs correctly — all three agy profiles declare the hooks and point at scripts that exist,
 and the cause has not been chased. So `liveness` must always be able to answer from pid
-liveness plus the tee log's mtime alone, which is how stalls were judged by hand before any
-of this existed.
+liveness plus the tee log alone, which is how stalls were judged by hand before any of this
+existed.
+
+⚠ An adapter also declares `tui`: whether its log carries a terminal interface rather than
+plain text. A TUI keeps emitting after the work is done, so liveness has to discount that
+noise or the runner never looks idle again. Getting this wrong is not a visible bug — it is
+a stall watchdog that quietly cannot fire.
 
 `nudge` may legitimately fail. A runner that cannot take a continuation returns False rather
 than pretending, and the queue relaunches instead. Do not paper over this: a nudge that

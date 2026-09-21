@@ -589,7 +589,7 @@ def test_an_idle_marker_never_proves_a_session_is_idle(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(shell, "MARKERS", markers)
     monkeypatch.setattr(shell, "pid_alive", lambda pid: True)
-    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True: True)
+    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True, floor=0.0: True)
 
     handle = Handle("claude", "ux-1", 4242, log=None)
     assert shell.liveness("claude", handle, state_dir=tmp_path) is Live.WORKING
@@ -602,7 +602,7 @@ def test_a_fresh_dispatch_is_never_reaped_for_want_of_a_baseline(tmp_path, monke
 
     monkeypatch.setattr(shell, "MARKERS", tmp_path / "none")
     monkeypatch.setattr(shell, "pid_alive", lambda pid: True)
-    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True: None)
+    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True, floor=0.0: None)
     handle = Handle("agy", "ux-1", 4242, log=None)
     assert shell.liveness("antigravity", handle, state_dir=tmp_path) is Live.WORKING
 
@@ -614,7 +614,7 @@ def test_every_signal_negative_is_idle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shell, "MARKERS", tmp_path / "none")
     monkeypatch.setattr(shell, "pid_alive", lambda pid: True)
-    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True: False)
+    monkeypatch.setattr(shell, "cpu_advanced", lambda s, p, d, record=True, floor=0.0: False)
     handle = Handle("agy", "ux-1", 4242, log=None)
     assert shell.liveness("antigravity", handle, state_dir=tmp_path) is Live.IDLE
 

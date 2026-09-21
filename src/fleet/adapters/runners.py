@@ -62,12 +62,24 @@ class Agy:
     profiles, reads the real quota buckets, locks its rotation state so two dispatches
     cannot land on one account, and parks a profile for five hours after a limit error.
     Reimplementing any of that here would be a second opinion about the same facts.
+
+    ⚠ It runs with `-p`, not `-i`. Interactive agy does not exit when a turn ends — it
+    returns to its prompt and holds the pane open, which on 2026-09-21 left five finished
+    sessions sitting on their slots for up to nineteen hours with their work already
+    merged and deployed. `-p` exits, so the wrapper reports and the slot comes back. The
+    cost is that a `-p` run cannot be nudged and kills its own background tasks on the way
+    out, so a brief must carry everything it needs and say to keep commands in the
+    foreground.
     """
 
     name = "agy"
     auto = True
     """The default runner, and the only one the queue reaches for on its own. Its accounts
     exist to be spent; that is the whole reason there are three of them."""
+
+    tui = False
+    """Only because of `-p`. Under `-i` this was True in everything but name, and the flag
+    did not exist to say so."""
 
     STATUS = re.compile(r"^\s*(?P<profile>\S+)\s+last\s+\S+\s*\S*\s+(?P<rest>.*?)$", re.MULTILINE)
     FIVE_HOUR = re.compile(r"gemini-5h\s+(?P<pct>\d+)%")
@@ -200,17 +212,23 @@ class Agy:
         pick = f"--model {q(model)} " if model else ""
         cmd = (
             f"cd {q(workspace)} && agya {q(account)} {pick}--dangerously-skip-permissions "
-            f'-i "$(cat {q(path)})"'
+            f'-p "$(cat {q(path)})"'
         )
         tmux = f"{session}-{account}"
         pid = tmux_spawn(tmux, write_wrapper(session, cmd, log, _script_for(session)))
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
-        return liveness("antigravity", handle, state_dir=STATE, record=record)
+        return liveness("antigravity", handle, state_dir=STATE, record=record, tui=self.tui)
 
     def nudge(self, handle: Handle, text: str) -> bool:
-        return bool(handle.tmux) and tmux_send(handle.tmux, text)
+        """Always False. A `-p` run has no prompt to type into.
+
+        Keystrokes would land in the pane's shell once the agent exits, or in a run that
+        is not reading them, and `base.py` is explicit that a runner which cannot take a
+        continuation says so rather than pretending. The queue relaunches instead.
+        """
+        return False
 
 
 class Claude:
@@ -229,6 +247,11 @@ class Claude:
     name = "claude"
     auto = False
     """On request. A session reaches claude by naming it, never by being next in line."""
+
+    tui = False
+    """Launched without `-p` but still non-interactive, because piping stdout puts Claude
+    Code in print mode. The log is plain text and silent until the end, which is why CPU
+    is the only signal that speaks for this runner."""
 
     PROCESS = "/share/claude/versions/"
     """What a live Claude Code session looks like from outside.
@@ -295,7 +318,7 @@ class Claude:
         return Handle(self.name, session, pid, account="default", tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
-        return liveness("claude", handle, state_dir=STATE, record=record)
+        return liveness("claude", handle, state_dir=STATE, record=record, tui=self.tui)
 
     def nudge(self, handle: Handle, text: str) -> bool:
         return bool(handle.tmux) and tmux_send(handle.tmux, text)
@@ -317,6 +340,11 @@ class Cursor:
     auto = False
     """On request. Its allowance is measured in money rather than a fraction, so there is
     no floor to stop at — which is the more reason the queue may not reach for it."""
+
+    tui = True
+    """The one runner still launched interactively, so its log is a terminal and its CPU
+    reading needs the idle-redraw floor. It keeps `-i` deliberately: a cursor continuation
+    would otherwise be a relaunch every time."""
 
     def __init__(self, concurrent: int = 1, floor: float = 0.05) -> None:
         self.concurrent = concurrent
@@ -417,7 +445,7 @@ class Cursor:
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
-        return liveness("cursor", handle, state_dir=STATE, record=record)
+        return liveness("cursor", handle, state_dir=STATE, record=record, tui=self.tui)
 
     def nudge(self, handle: Handle, text: str) -> bool:
         return bool(handle.tmux) and tmux_send(handle.tmux, text)

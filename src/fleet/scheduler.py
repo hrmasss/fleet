@@ -93,6 +93,11 @@ def brief_for(project: Project, item: Item, session_path: Path) -> str:
     It points at the session file rather than inlining it. The file is the work record, the
     agent updates it as it goes, and a brief that copies it creates a second version that
     immediately disagrees with the first.
+
+    ⚠ The foreground line is not style advice. A printing run kills its own background
+    tasks when it exits, so an agent that backgrounds a build and waits for it loses the
+    build and reports on nothing. It is said to every runner rather than to the one that
+    needs it, because nothing outside `adapters/` may know which runner this is.
     """
     head = (
         f"Work session {item.session}. Its brief, acceptance criteria and traps are in "
@@ -102,6 +107,8 @@ def brief_for(project: Project, item: Item, session_path: Path) -> str:
         f"merged, deploy it, confirm the running production image tag contains your merge "
         f"commit, re-walk the change on the live site, then close the session with "
         f"per-criterion evidence.\n\n"
+        f"Run builds, tests and deploys in the foreground and read the output. Do not "
+        f"background a long command and poll it — it will be killed when you exit.\n\n"
         f"Finish. Do not stop one step short: a merged PR that is not deployed is not "
         f"done, and a ticked box with no evidence behind it is worse than an unticked one."
     )

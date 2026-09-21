@@ -217,3 +217,100 @@ def test_the_helpers_beside_a_claude_session_are_not_sessions():
     c = runners.Claude()
     assert count_matching(CLAUDE_PS, c.PROCESS) == 2, "the pty host carries the path too"
     assert count_matching(CLAUDE_PS, c.PROCESS, c.NOT_A_SESSION) == 1
+
+
+# ── the parked pane ──────────────────────────────────────────────────────────────────
+# ⚠ On 2026-09-21 five agy sessions on hapl-aux had been finished for between sixteen and
+# nineteen hours, work merged and deployed, and the board showed all five as working. An
+# agy pane left at its prompt emits control sequences forever: 450 bytes a minute, all of
+# it escape codes and not one visible character, plus enough CPU to keep the kernel
+# counter moving. That defeated both of liveness's fallbacks at once, so it could not
+# return IDLE for them and the stall watchdog could never fire. These pin the fix.
+
+PARKED = "\x1b[>4;2m" * 200
+"""What a finished agy pane writes to its log, verbatim and forever."""
+
+
+def test_a_log_that_only_redraws_has_not_said_anything():
+    from fleet.adapters.shell import ANSI, visible_len
+
+    assert ANSI.sub("", PARKED) == "", "private-parameter CSI is the form that was surviving"
+    assert visible_len is not None
+
+
+def test_visible_length_ignores_a_redraw_and_counts_a_sentence(tmp_path):
+    from fleet.adapters.shell import visible_len
+
+    log = tmp_path / "fa-09.1.log"
+    log.write_text("● Read(todo/CLAUDE.md)\n" + PARKED, encoding="utf-8")
+    before = visible_len(log)
+
+    log.write_text(log.read_text(encoding="utf-8") + PARKED, encoding="utf-8")
+    assert visible_len(log) == before, "1600 more bytes, nothing more said"
+
+    log.write_text(log.read_text(encoding="utf-8") + "● Bash(git push)\n", encoding="utf-8")
+    assert visible_len(log) > before
+
+
+def test_a_parked_session_goes_idle_and_a_working_one_does_not(tmp_path, monkeypatch):
+    """The whole bug, end to end: same file growth, opposite verdicts."""
+    from fleet.adapters import shell
+
+    monkeypatch.setattr(shell, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(shell, "marker_state", lambda *a: None)
+    monkeypatch.setattr(shell, "cpu_ticks", lambda pid: 0)
+
+    log = tmp_path / "s.log"
+    log.write_text(PARKED, encoding="utf-8")
+    h = Handle(runner="agy", session="s", pid=1, log=str(log))
+
+    assert shell.liveness("antigravity", h, state_dir=tmp_path) is State.WORKING, "first look"
+
+    log.write_text(log.read_text(encoding="utf-8") + PARKED, encoding="utf-8")
+    assert shell.liveness("antigravity", h, state_dir=tmp_path) is State.IDLE
+
+    log.write_text(log.read_text(encoding="utf-8") + "● Edit(app.py)\n", encoding="utf-8")
+    assert shell.liveness("antigravity", h, state_dir=tmp_path) is State.WORKING
+
+
+def test_cpu_alone_still_speaks_for_a_runner_that_prints_nothing(tmp_path, monkeypatch):
+    """⚠ Claude Code in print mode writes to its log only at the very end, so the text
+    signal is silent for its entire run and CPU is the only thing holding it alive. The
+    redraw floor must not be applied to it."""
+    from fleet.adapters import shell
+
+    monkeypatch.setattr(shell, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(shell, "marker_state", lambda *a: None)
+
+    log = tmp_path / "c.log"
+    log.write_text("", encoding="utf-8")
+    h = Handle(runner="claude", session="c", pid=1, log=str(log))
+
+    ticks = [100]
+    monkeypatch.setattr(shell, "cpu_ticks", lambda pid: ticks[0])
+    shell.liveness("claude", h, state_dir=tmp_path)
+
+    ticks[0] = 101
+    assert shell.liveness("claude", h, state_dir=tmp_path) is State.WORKING
+    ticks[0] = 101
+    assert shell.liveness("claude", h, state_dir=tmp_path) is State.IDLE
+
+
+def test_every_adapter_says_whether_its_log_is_a_terminal():
+    """⚠ A new adapter that forgets this inherits `False` from `getattr` and its sessions
+    become unreapable the moment it is launched interactively — which is not a visible
+    bug, it is a watchdog that quietly cannot fire."""
+    for name, adapter in registry().items():
+        assert isinstance(getattr(adapter, "tui", None), bool), f"{name} does not declare tui"
+
+
+def test_agy_exits_when_its_turn_ends():
+    """`-i` holds the pane open after the work is done and the slot never comes back."""
+    src = inspect.getsource(runners.Agy._start)
+    assert '-p "$(cat' in src and "-i " not in src
+
+
+def test_a_printing_runner_refuses_a_continuation():
+    """base.py: a runner that cannot take one says so rather than pretending."""
+    h = Handle(runner="agy", session="s", pid=1, tmux="s-a4")
+    assert runners.Agy().nudge(h, "carry on") is False

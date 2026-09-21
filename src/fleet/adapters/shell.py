@@ -17,6 +17,13 @@ stdout puts it in print mode.
 
 So `liveness` combines three signals and lets working win, with CPU time from /proc as the
 one that holds everywhere, because it asks the kernel instead of the agent.
+
+⚠ **Neither the log nor the kernel can tell work from a terminal that is merely still
+painted.** An agent CLI left at its prompt emits control sequences forever: the log grows,
+the CPU counter moves, and nothing is happening. So the log signal counts visible
+characters rather than bytes (`visible_len`), and a runner that shows a terminal interface
+declares `tui = True`, which puts a floor under the CPU reading. Both came from five agy
+sessions that finished their work and then held their slots overnight.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -34,6 +42,30 @@ from fleet.adapters.base import Handle, State
 MARKERS = Path(os.environ.get("CCMUX_HOME", str(Path.home() / ".config/ccmux"))) / "session-pids"
 MARKER_STALE = 300.0
 """A marker older than this says nothing useful; fall back to pid and log."""
+
+_ESC = "\x1b"
+ANSI = re.compile(
+    _ESC + r"\[[0-9;:?<>=]*[ -/]*[@-~]"  # CSI, including private forms like ESC[>4;2m
+    "|" + _ESC + r"\][^\x07\x1b]*(?:\x07|" + _ESC + r"\\)?"  # OSC, terminated by BEL or ST
+    "|" + _ESC + r"[()][@-~]"  # charset designation
+    "|" + _ESC + r"[@-Z\\-_]"  # the remaining two-character escapes
+)
+"""Everything a terminal reads as instruction rather than as text.
+
+⚠ The private-parameter forms are the whole reason this exists. A parked agy pane emits
+`ESC[>4;2m` and nothing else, and a naive `\\x1b\\[[0-9;]*m` leaves every one of them in
+place — which is how the first pass at this still counted a finished session as busy.
+"""
+
+IDLE_REPAINT_TICKS_PER_SEC = 1.0
+"""CPU below this rate is indistinguishable from a TUI redrawing an idle prompt.
+
+Measured on hapl-aux on 2026-09-21 against five agy panes that had been finished for
+between sixteen and nineteen hours: each one burned 0.36 to 0.52 ticks per second and
+wrote 450 bytes a minute, all of it escape codes and not one visible character. The floor
+is set at roughly twice the worst of those, and it only ever applies to a runner that
+declares itself a TUI.
+"""
 
 
 def sh(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
@@ -185,31 +217,101 @@ def reap(pid: int | None, tmux_name: str | None) -> None:
                 os.kill(victim, 15)
 
 
+def _sample(
+    state_dir: Path, kind: str, session: str, now: int, record: bool
+) -> tuple[int, float] | None:
+    """Read the last reading of `kind` for this session, then optionally store `now`.
+
+    Returns the previous value and the wall time it was taken at, or None on the first
+    look. Readings are written as `<value> <timestamp>`; a bare integer is the older
+    format and is treated as no baseline rather than guessed at, which costs one window.
+
+    ⚠ `record=False` for a caller that is only looking. The board polls every five
+    seconds; letting it move the baseline would quietly replace the watchdog's
+    thirty-minute window with a five-second one.
+    """
+    path = state_dir / kind / f"{session}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    before: tuple[int, float] | None = None
+    try:
+        parts = path.read_text(encoding="utf-8").split()
+        if len(parts) == 2:
+            before = (int(parts[0]), float(parts[1]))
+    except (OSError, ValueError):
+        before = None
+    if record:
+        with contextlib.suppress(OSError):
+            path.write_text(f"{now} {time.time()}", encoding="utf-8")
+    return before
+
+
+def visible_len(path: str | Path) -> int | None:
+    """How many characters of actual text this log holds, escape codes and spacing removed.
+
+    ⚠ File size is not this number, and the gap between them is where a finished session
+    hid for nineteen hours. An agent CLI left at its prompt keeps the terminal alive with
+    control sequences, so the log grows forever while saying nothing. Stripping them and
+    dropping whitespace leaves only what the agent actually said, which is the thing worth
+    asking whether it changed.
+
+    Whitespace goes because a redraw repositions and repads without adding a word.
+    """
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return len(re.sub(r"\s+", "", ANSI.sub("", raw)))
+
+
+def text_advanced(
+    session: str, log: str | None, state_dir: Path, record: bool = True
+) -> bool | None:
+    """Has the agent said anything new since the last time we looked?
+
+    This replaced the log's mtime, which asked whether the file had been *written to* and
+    so answered yes for a pane that was only redrawing itself. None means no baseline yet.
+    """
+    if not log:
+        return None
+    now = visible_len(log)
+    if now is None:
+        return None
+    before = _sample(state_dir, "text", session, now, record)
+    return None if before is None else now > before[0]
+
+
 def cpu_advanced(
-    session: str, pid: int | None, state_dir: Path, record: bool = True
+    session: str,
+    pid: int | None,
+    state_dir: Path,
+    record: bool = True,
+    floor: float = 0.0,
 ) -> bool | None:
     """Has this process used CPU since the last time we looked?
 
     The one activity signal that holds for every runner, because it asks the kernel rather
     than the agent. Judging remote sessions by CPU time is what worked by hand long before
     any of this existed.
+
+    ⚠ `floor` exists because "any CPU at all" is not evidence of work when the process is
+    a TUI. A pane parked at its prompt still redraws, and that redraw alone kept five
+    finished sessions marked working overnight. Above the floor the rate is work; at it,
+    the kernel is only telling us the terminal is still painted. Non-TUI runners pass 0
+    and keep the original any-advance reading, which is what a claude session in print
+    mode needs — it writes nothing until the end, so CPU is all it has.
     """
     now = cpu_ticks(pid)
     if now is None:
         return None
-    sample = state_dir / "cpu" / f"{session}.txt"
-    sample.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        before = int(sample.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        before = None
-    # ⚠ `record=False` for a caller that is only looking. The board polls every five
-    # seconds; letting it move the baseline would quietly replace the watchdog's
-    # thirty-minute window with a five-second one.
-    if record:
-        with contextlib.suppress(OSError):
-            sample.write_text(str(now), encoding="utf-8")
-    return None if before is None else now > before
+    before = _sample(state_dir, "cpu", session, now, record)
+    if before is None:
+        return None
+    if floor <= 0:
+        return now > before[0]
+    elapsed = time.time() - before[1]
+    if elapsed <= 0:
+        return None
+    return (now - before[0]) / elapsed > floor
 
 
 def liveness(
@@ -218,6 +320,7 @@ def liveness(
     idle_after: float = 600.0,
     state_dir: Path | None = None,
     record: bool = True,
+    tui: bool = False,
 ) -> State:
     """working, idle or gone. Three signals, and working wins.
 
@@ -229,11 +332,21 @@ def liveness(
 
     So a marker is only ever evidence *for* working, never against it.
 
-    The log is the second signal, and it fails for claude specifically: piping stdout puts
-    it in non-interactive mode, where nothing is written until the very end.
+    The log is the second signal. It asks whether the agent said anything new, not whether
+    the file grew — see `visible_len`. It still fails for claude specifically, which writes
+    nothing at all until the very end because piping stdout puts it in print mode.
 
-    CPU time is the third and the only one that holds for all three runners, because it
-    asks the kernel instead of the agent. Idle means every signal came back negative.
+    CPU time is the third and the only one that holds when a runner is silent by design.
+
+    ⚠ `tui` is for a runner whose log carries a terminal interface rather than plain text.
+    Such a session never stops emitting, so both of the last two signals read as work
+    forever once it finishes: the file keeps growing and the kernel keeps counting. On
+    2026-09-21 that held five finished agy panes at `working` for up to nineteen hours and
+    silently disabled the stall watchdog, because `liveness` could not return IDLE for
+    them at all. Declaring the runner a TUI puts a floor under the CPU reading; the text
+    signal needs no flag, since stripping escape codes from a log that has none is free.
+
+    Idle means every signal came back negative.
     """
     if not (pid_alive(handle.pid) or (handle.tmux and tmux_alive(handle.tmux))):
         return State.GONE
@@ -242,21 +355,33 @@ def liveness(
     if m and m[0] == "working" and (time.time() - m[1]) < MARKER_STALE:
         return State.WORKING
 
-    if handle.log:
-        try:
-            if (time.time() - Path(handle.log).stat().st_mtime) < idle_after:
-                return State.WORKING
-        except OSError:
-            pass
+    if state_dir is None:
+        # No place to keep a baseline, so the best available reading is the old one: the
+        # log was touched recently. Wrong for a TUI, but better than calling it gone.
+        if handle.log:
+            with contextlib.suppress(OSError):
+                if (time.time() - Path(handle.log).stat().st_mtime) < idle_after:
+                    return State.WORKING
+        return State.IDLE
 
-    if state_dir is not None:
-        advanced = cpu_advanced(handle.session, handle.pid, state_dir, record=record)
-        if advanced is not False:
-            # True is working; None means we have no baseline yet, and refusing to call a
-            # session idle on the first look is what stops a fresh dispatch being reaped.
-            return State.WORKING
+    spoke = text_advanced(handle.session, handle.log, state_dir, record=record)
+    if spoke:
+        return State.WORKING
 
-    return State.IDLE
+    # ⚠ None from a session that has a log is the first look at it, not silence — the
+    # baseline was written by the call we are inside. None from one with no log at all is
+    # a different thing: that runner has only CPU to speak for it, and CPU gets the last
+    # word. Collapsing the two reaps a fresh dispatch or keeps a dead one alive.
+    first_look = bool(handle.log) and spoke is None
+
+    floor = IDLE_REPAINT_TICKS_PER_SEC if tui else 0.0
+    burned = cpu_advanced(handle.session, handle.pid, state_dir, record=record, floor=floor)
+    if burned is not False:
+        # True is working; None means we have no baseline yet, and refusing to call a
+        # session idle on the first look is what stops a fresh dispatch being reaped.
+        return State.WORKING
+
+    return State.WORKING if first_look else State.IDLE
 
 
 def process_lines() -> list[str]:
