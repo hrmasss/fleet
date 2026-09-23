@@ -363,3 +363,114 @@ def test_the_runner_that_shows_a_terminal_is_the_one_that_gets_pinned():
     """Same flag drives both: what liveness must discount, and what attach must not resize."""
     pinned = {n for n, a in registry().items() if getattr(a, "tui", False)}
     assert pinned == {"cursor"}, "agy prints with -p now; claude was never interactive"
+
+
+# --- agy: activity is not progress ------------------------------------------------------
+# fa-11, 2026-09-23: seventy hours at "working" on an attempt that stopped after sixty-six
+# minutes. These rows are the real shape of its transcript's first and last lines.
+
+
+def _conversation(root, account, brief, rows, age):
+    import json
+    import os
+    import time
+
+    d = root / account / "antigravity-cli" / "brain" / "9e04e4ff" / ".system_generated" / "logs"
+    d.mkdir(parents=True)
+    tf = d / "transcript_full.jsonl"
+    first = {
+        "step_index": 0,
+        "source": "USER_EXPLICIT",
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "created_at": "2026-09-20T09:49:00Z",
+        "content": f"<USER_REQUEST>\n{brief}\n</USER_REQUEST>",
+    }
+    tf.write_text("\n".join(json.dumps(r) for r in [first, *rows]) + "\n", encoding="utf-8")
+    then = time.time() - age
+    os.utime(tf, (then, then))
+    return tf
+
+
+WAITING = {
+    "source": "MODEL",
+    "type": "PLANNER_RESPONSE",
+    "status": "DONE",
+    "content": "I am inspecting the save button. Waiting for the script output.",
+}
+TOOL_IN_FLIGHT = {
+    "source": "MODEL",
+    "type": "GENERIC",
+    "status": "RUNNING",
+    "content": "Tool is running as a background task",
+}
+DIED = {"source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "DONE", "content": None}
+
+
+def test_a_turn_that_ended_long_ago_is_not_work(tmp_path):
+    from fleet.adapters import runners
+
+    tf = _conversation(tmp_path, "a6", "Work session fa-11.", [TOOL_IN_FLIGHT, WAITING], 3600)
+    assert runners.turn_ended(tf)
+
+
+def test_an_error_that_ended_the_turn_is_not_work_either(tmp_path):
+    from fleet.adapters import runners
+
+    tf = _conversation(tmp_path, "a7", "fix the hero", [DIED], 3600)
+    assert runners.turn_ended(tf)
+
+
+def test_a_tool_still_running_is_never_called_idle_by_the_transcript(tmp_path):
+    """A build waiting its turn on the shared lock looks exactly like this for many minutes."""
+    from fleet.adapters import runners
+
+    tf = _conversation(tmp_path, "a6", "build it", [WAITING, TOOL_IN_FLIGHT], 3 * 3600)
+    assert not runners.turn_ended(tf)
+
+
+def test_a_turn_that_only_just_ended_gets_its_grace(tmp_path):
+    """Under -p the process exits seconds after the turn; that exit, not this, should decide."""
+    from fleet.adapters import runners
+
+    tf = _conversation(tmp_path, "a6", "b", [WAITING], 30)
+    assert not runners.turn_ended(tf)
+
+
+def test_the_conversation_is_found_by_the_whole_brief_not_a_shared_preamble(tmp_path):
+    from fleet.adapters import runners
+
+    preamble = "# Charulata — dispatched session\n" + "shared rules. " * 200
+    mine = _conversation(tmp_path, "a6", preamble + "Your task: ux-131", [WAITING], 3600)
+    other = tmp_path / "a6" / "antigravity-cli" / "brain" / "other" / ".system_generated" / "logs"
+    other.mkdir(parents=True)
+    (other / "transcript_full.jsonl").write_text(
+        mine.read_text(encoding="utf-8").replace("ux-131", "ux-132"), encoding="utf-8"
+    )
+    found = runners.agy_transcript([str(tmp_path / "a6")], preamble + "Your task: ux-131")
+    assert found == mine
+
+
+def test_agy_liveness_turns_a_busy_looking_pane_idle_when_its_turn_is_over(tmp_path, monkeypatch):
+    from fleet.adapters import runners
+
+    brief = "Work session fa-11."
+    _conversation(tmp_path, "a6", brief, [TOOL_IN_FLIGHT, WAITING], 70 * 3600)
+    monkeypatch.setattr(runners, "LOGS", tmp_path)
+    (tmp_path / "fa-11.brief.md").write_text(brief, encoding="utf-8")
+    monkeypatch.setattr(runners.Agy, "_dirs", staticmethod(lambda p: [str(tmp_path / p)]))
+    monkeypatch.setattr(runners, "liveness", lambda *a, **k: State.WORKING)
+    h = Handle("agy", "fa-11", 1, account="a6", tmux="fa-11-a6", log=None)
+    assert runners.Agy().liveness(h) is State.IDLE
+
+
+def test_agy_liveness_leaves_working_alone_when_it_cannot_find_the_conversation(
+    tmp_path, monkeypatch
+):
+    from fleet.adapters import runners
+
+    monkeypatch.setattr(runners, "LOGS", tmp_path)
+    monkeypatch.setattr(runners.Agy, "_dirs", staticmethod(lambda p: [str(tmp_path / p)]))
+    monkeypatch.setattr(runners, "liveness", lambda *a, **k: State.WORKING)
+    h = Handle("agy", "ux-9", 1, account="a1", tmux="ux-9-a1", log=None)
+    assert runners.Agy().liveness(h) is State.WORKING

@@ -889,3 +889,46 @@ def test_a_settled_row_stops_offering_a_pane_to_attach_to(tmp_path):
     led.transition("ux-1", State.NEEDS_YOU, note="gate could not read the PR")
     assert led.get("ux-1").tmux is None
     led.close()
+
+
+def test_a_session_that_looks_busy_forever_is_stopped_at_the_ceiling(world):
+    """Liveness said working for seventy hours once. The ceiling does not ask it."""
+    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.WORKING)})
+    write_session(sessions, "fa-11")
+    led.add("fa-11")
+    sch.tick()
+    led._db.execute(
+        "UPDATE items SET started_at = ? WHERE session = 'fa-11'",
+        (time.time() - scheduler.MAX_RUNTIME_SECONDS - 60,),
+    )
+    out = sch.tick(dispatch=False)
+    assert out.stalled == ["fa-11"]
+    assert led.get("fa-11").state is State.QUEUED
+
+
+def test_a_working_session_under_the_ceiling_is_left_alone(world):
+    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.WORKING)})
+    write_session(sessions, "ux-1")
+    led.add("ux-1")
+    sch.tick()
+    led._db.execute(
+        "UPDATE items SET started_at = ? WHERE session = 'ux-1'",
+        (time.time() - scheduler.MAX_RUNTIME_SECONDS + 600,),
+    )
+    out = sch.tick(dispatch=False)
+    assert out.stalled == []
+    assert led.get("ux-1").state is State.RUNNING
+
+
+def test_a_session_already_gone_is_verified_not_stalled_even_past_the_ceiling(world):
+    """An exit is news the gate needs; reaping it as a stall would throw the result away."""
+    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.GONE)})
+    write_session(sessions, "ux-1")
+    led.add("ux-1")
+    sch.tick()
+    led._db.execute(
+        "UPDATE items SET started_at = ? WHERE session = 'ux-1'",
+        (time.time() - scheduler.MAX_RUNTIME_SECONDS - 60,),
+    )
+    out = sch.tick(dispatch=False)
+    assert out.stalled == []

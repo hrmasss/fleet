@@ -11,9 +11,11 @@ real quota oracle, and `auto = True`. claude and cursor have one account each an
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
+import time
 from pathlib import Path
 
 from fleet.adapters import quota
@@ -31,6 +33,77 @@ from fleet.adapters.shell import (
 from fleet.paths import STATE
 
 LOGS = Path(os.environ.get("FLEET_LOGS", str(Path.home() / ".local/state/fleet/logs")))
+
+
+TURN_GRACE = float(os.environ.get("FLEET_AGY_TURN_GRACE", "600"))
+"""How long an agy conversation may sit on a finished turn before the session counts as idle.
+
+A turn ends, then under `-p` the process exits within seconds. Ten minutes is far past that,
+so anything still alive at the end of it is not about to exit on its own."""
+
+TURN_OVER = {("MODEL", "PLANNER_RESPONSE"), ("SYSTEM", "ERROR_MESSAGE")}
+"""The last rows an agy conversation ends on when nobody is doing anything.
+
+A `(MODEL, GENERIC, RUNNING)` row is a tool still in flight and says nothing either way: a
+long build under a lock looks exactly like that and must not be reaped for it."""
+
+TAIL_BYTES = 262144
+
+
+def agy_transcript(dirs: list[str], brief: str) -> Path | None:
+    """The agy conversation this brief started, or None if it cannot be found.
+
+    agy keeps one directory per conversation under `antigravity-cli/brain/`, and the first
+    row of its transcript is the prompt it was given. Matched on the whole brief, because
+    dispatched briefs routinely share a preamble thousands of characters long, so any
+    prefix short enough to be cheap matches several sessions at once. A relaunch writes a
+    new brief and starts a new conversation, so the newest match is the live one.
+    """
+    want = brief.strip()
+    if not want:
+        return None
+    best: tuple[str, Path] | None = None
+    pattern = "antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl"
+    for d in dirs:
+        for tf in Path(d).glob(pattern):
+            try:
+                with tf.open(encoding="utf-8", errors="replace") as f:
+                    first = json.loads(f.readline())
+            except (OSError, ValueError):
+                continue
+            if first.get("type") != "USER_INPUT" or want not in str(first.get("content", "")):
+                continue
+            stamp = str(first.get("created_at", ""))
+            if best is None or stamp > best[0]:
+                best = (stamp, tf)
+    return best[1] if best else None
+
+
+def turn_ended(transcript: Path, now: float | None = None, grace: float = TURN_GRACE) -> bool:
+    """Did this conversation end its turn, and has nothing happened since?
+
+    False whenever the answer is not certain: an unreadable file, a tool in flight, or a turn
+    that ended moments ago. This check only ever takes a session from working to idle, so a
+    wrong True reaps real work, while a wrong False leaves the other signals and the runtime
+    ceiling to catch it.
+    """
+    try:
+        st = transcript.stat()
+        age = (now if now is not None else time.time()) - st.st_mtime
+        if age < grace:
+            return False
+        with transcript.open("rb") as f:
+            f.seek(max(0, st.st_size - TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in reversed(tail.splitlines()):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        return (row.get("source"), row.get("type")) in TURN_OVER and row.get("status") == "DONE"
+    return False
 
 
 def _log_for(session: str, attempt: int) -> str:
@@ -234,7 +307,26 @@ class Agy:
         return Handle(self.name, session, pid, account=account, tmux=tmux, log=log)
 
     def liveness(self, handle: Handle, record: bool = True) -> State:
-        return liveness("antigravity", handle, state_dir=STATE, record=record, tui=self.tui)
+        """The shared signals, then one that agy can answer better than any of them.
+
+        ⚠ CPU and log text measure activity, not progress, and an agy process can stay
+        active while going nowhere. fa-11 did 66 minutes of work on 2026-09-20, backgrounded
+        a browser script that hung, ended its turn to wait for it, and sat at that turn for
+        seventy hours. Its pane burned about 17 ticks a second the whole time, far over the
+        redraw floor, so every hourly tick called it working and it held an a6 slot for
+        three days. It had been launched with `-i` the day before this runner moved to
+        `-p`, so nothing ever made it exit. agy's own transcript knew the entire time: its
+        last row was the model's reply saying it would wait.
+        """
+        state = liveness("antigravity", handle, state_dir=STATE, record=record, tui=self.tui)
+        if state is not State.WORKING or not handle.account:
+            return state
+        try:
+            brief = (LOGS / f"{handle.session}.brief.md").read_text(encoding="utf-8")
+        except OSError:
+            return state
+        tf = agy_transcript(self._dirs(handle.account), brief)
+        return State.IDLE if tf is not None and turn_ended(tf) else state
 
     def nudge(self, handle: Handle, text: str) -> bool:
         """Always False. A `-p` run has no prompt to type into.

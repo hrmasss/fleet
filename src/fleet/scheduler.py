@@ -37,6 +37,15 @@ MAX_ATTEMPTS = int(os.environ.get("FLEET_MAX_ATTEMPTS", "2"))
 IDLE_SECONDS = float(os.environ.get("FLEET_IDLE_SECONDS", "1800"))
 """Idle this long with no exit is a stall. Thirty minutes is deliberately generous: a long
 browser walk goes quiet for a while, and reaping real work is worse than waiting."""
+MAX_RUNTIME_SECONDS = float(os.environ.get("FLEET_MAX_RUNTIME_SECONDS", str(6 * 3600)))
+"""No attempt runs longer than this, whatever its liveness says.
+
+Liveness can only be as good as its signals, and every one of them has been fooled: a redraw
+counted as work, a quota retry loop counted as work, and on 2026-09-23 fa-11 was found
+seventy hours into an attempt that had stopped after sixty-six minutes. The ceiling is what
+catches the next way nobody has thought of yet. Six hours is three times the longest real
+attempt measured that week; one that hits it is relaunched under the ordinary attempt cap,
+so genuinely long work loses its context, not its worktree."""
 
 
 CONTINUATIONS: dict[Verdict, str] = {
@@ -181,17 +190,21 @@ class Scheduler:
                 )
                 continue
 
-            if state is Live.IDLE and it.started_at:
-                quiet = time.time() - (it.started_at or 0)
-                if quiet > IDLE_SECONDS:
-                    self._stall(it, out, quiet)
+            ran = time.time() - it.started_at if it.started_at else 0.0
+            if ran > MAX_RUNTIME_SECONDS:
+                ceiling = f"{MAX_RUNTIME_SECONDS / 3600:g}h"
+                self._stall(it, out, ran, why=f"ran {ran / 3600:.1f}h, past the {ceiling} ceiling")
+                continue
 
-    def _stall(self, it: Item, out: Outcome, quiet: float) -> None:
+            if state is Live.IDLE and ran > IDLE_SECONDS:
+                self._stall(it, out, ran)
+
+    def _stall(self, it: Item, out: Outcome, quiet: float, why: str | None = None) -> None:
         # ⚠ Stop it before replacing it. Requeueing a live session leaves the old agent
         # running — burning quota, possibly still writing to the same worktree — and the
         # relaunch then collides on the tmux name and fails outright.
         reap(it.pid, it.tmux)
-        note = f"idle {int(quiet // 60)}m with no exit and no question"
+        note = why or f"idle {int(quiet // 60)}m with no exit and no question"
         if it.attempts >= MAX_ATTEMPTS:
             self.led.transition(
                 it.session,
