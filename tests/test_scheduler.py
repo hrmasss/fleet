@@ -891,44 +891,62 @@ def test_a_settled_row_stops_offering_a_pane_to_attach_to(tmp_path):
     led.close()
 
 
-def test_a_session_that_looks_busy_forever_is_stopped_at_the_ceiling(world):
-    """Liveness said working for seventy hours once. The ceiling does not ask it."""
-    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.WORKING)})
-    write_session(sessions, "fa-11")
-    led.add("fa-11")
+# --- the silence ceiling ----------------------------------------------------------------
+# Not a runtime cap: a monitoring job may run for days. What stops is a session that has
+# said nothing for too long, which is what fa-11 was for seventy hours.
+
+
+def _running(world, sid, frontmatter_extra="", state=Live.WORKING):
+    led, sch, sessions = build(world, {"agy": FakeAdapter(state=state)})
+    write_session(sessions, sid)
+    if frontmatter_extra:
+        f = next(sessions.glob(f"{sid}-*.md"))
+        f.write_text(
+            f.read_text(encoding="utf-8").replace("---\n", f"---\n{frontmatter_extra}\n", 1),
+            encoding="utf-8",
+        )
+    led.add(sid)
     sch.tick()
-    led._db.execute(
-        "UPDATE items SET started_at = ? WHERE session = 'fa-11'",
-        (time.time() - scheduler.MAX_RUNTIME_SECONDS - 60,),
-    )
+    return led, sch
+
+
+def test_a_session_silent_past_the_limit_is_stopped_whatever_liveness_says(world, monkeypatch):
+    led, sch = _running(world, "fa-11")
+    monkeypatch.setattr(scheduler, "silent_for", lambda *a: scheduler.MAX_SILENCE_SECONDS + 60)
     out = sch.tick(dispatch=False)
     assert out.stalled == ["fa-11"]
     assert led.get("fa-11").state is State.QUEUED
 
 
-def test_a_working_session_under_the_ceiling_is_left_alone(world):
-    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.WORKING)})
-    write_session(sessions, "ux-1")
-    led.add("ux-1")
-    sch.tick()
+def test_a_long_run_that_keeps_talking_is_never_stopped(world, monkeypatch):
+    """Twenty hours in and still reporting: that is a monitoring job, not a leak."""
+    led, sch = _running(world, "watch-1")
     led._db.execute(
-        "UPDATE items SET started_at = ? WHERE session = 'ux-1'",
-        (time.time() - scheduler.MAX_RUNTIME_SECONDS + 600,),
+        "UPDATE items SET started_at = ? WHERE session = 'watch-1'", (time.time() - 20 * 3600,)
     )
+    monkeypatch.setattr(scheduler, "silent_for", lambda *a: 120.0)
     out = sch.tick(dispatch=False)
     assert out.stalled == []
-    assert led.get("ux-1").state is State.RUNNING
+    assert led.get("watch-1").state is State.RUNNING
 
 
-def test_a_session_already_gone_is_verified_not_stalled_even_past_the_ceiling(world):
+def test_a_session_can_ask_for_a_longer_quiet(world, monkeypatch):
+    led, sch = _running(world, "watch-2", "quiet_for: 12h")
+    monkeypatch.setattr(scheduler, "silent_for", lambda *a: 8 * 3600.0)
+    out = sch.tick(dispatch=False)
+    assert out.stalled == []
+
+
+def test_a_watcher_can_opt_out_of_the_silence_limit(world, monkeypatch):
+    led, sch = _running(world, "watch-3", "quiet_for: never")
+    monkeypatch.setattr(scheduler, "silent_for", lambda *a: 30 * 86400.0)
+    out = sch.tick(dispatch=False)
+    assert out.stalled == []
+
+
+def test_a_session_already_gone_is_verified_not_stalled_even_when_silent(world, monkeypatch):
     """An exit is news the gate needs; reaping it as a stall would throw the result away."""
-    led, sch, sessions = build(world, {"agy": FakeAdapter(state=Live.GONE)})
-    write_session(sessions, "ux-1")
-    led.add("ux-1")
-    sch.tick()
-    led._db.execute(
-        "UPDATE items SET started_at = ? WHERE session = 'ux-1'",
-        (time.time() - scheduler.MAX_RUNTIME_SECONDS - 60,),
-    )
+    led, sch = _running(world, "ux-1", state=Live.GONE)
+    monkeypatch.setattr(scheduler, "silent_for", lambda *a: scheduler.MAX_SILENCE_SECONDS + 60)
     out = sch.tick(dispatch=False)
     assert out.stalled == []

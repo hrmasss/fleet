@@ -296,6 +296,38 @@ def visible_len(path: str | Path) -> int | None:
     return len(re.sub(r"\s+", "", ANSI.sub("", raw)))
 
 
+def silent_for(session: str, log: str | None, state_dir: Path) -> float | None:
+    """Seconds since this session's log last gained a visible character, or None.
+
+    Not the same question as `text_advanced`, which asks whether anything changed since
+    the previous look and so resets every tick. This one remembers *when* the text last
+    grew, which is the only way to tell a session that has been quiet for five minutes
+    from one that has been quiet for three days while its CPU counter kept moving.
+
+    None means no log to read or no baseline yet. The first look writes the baseline, so
+    a session is never judged silent before it has been watched at all.
+    """
+    if not log:
+        return None
+    now_len = visible_len(log)
+    if now_len is None:
+        return None
+    path = state_dir / "heard" / f"{session}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    try:
+        parts = path.read_text(encoding="utf-8").split()
+        seen, since = int(parts[0]), float(parts[1])
+    except (OSError, ValueError, IndexError):
+        seen, since = -1, now
+    if now_len != seen:
+        # A new attempt truncates the log, so any change counts, not only growth.
+        with contextlib.suppress(OSError):
+            path.write_text(f"{now_len} {now}", encoding="utf-8")
+        return None if seen < 0 else 0.0
+    return now - since
+
+
 def text_advanced(
     session: str, log: str | None, state_dir: Path, record: bool = True
 ) -> bool | None:

@@ -19,11 +19,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fleet import gate
+from fleet import gate, paths
 from fleet import session as sessions
 from fleet.adapters.base import Adapter, Handle
 from fleet.adapters.base import State as Live
-from fleet.adapters.shell import reap, sh
+from fleet.adapters.shell import reap, sh, silent_for
 from fleet.foreman import autonomy
 from fleet.foreman.judge import Foreman, Judgement
 from fleet.foreman.packet import build as build_packet
@@ -37,15 +37,16 @@ MAX_ATTEMPTS = int(os.environ.get("FLEET_MAX_ATTEMPTS", "2"))
 IDLE_SECONDS = float(os.environ.get("FLEET_IDLE_SECONDS", "1800"))
 """Idle this long with no exit is a stall. Thirty minutes is deliberately generous: a long
 browser walk goes quiet for a while, and reaping real work is worse than waiting."""
-MAX_RUNTIME_SECONDS = float(os.environ.get("FLEET_MAX_RUNTIME_SECONDS", str(6 * 3600)))
-"""No attempt runs longer than this, whatever its liveness says.
+MAX_SILENCE_SECONDS = float(os.environ.get("FLEET_MAX_SILENCE_SECONDS", str(3 * 3600)))
+"""A running session that has not said anything new in this long is stuck, whatever its
+CPU or its runner's own liveness claims.
 
-Liveness can only be as good as its signals, and every one of them has been fooled: a redraw
-counted as work, a quota retry loop counted as work, and on 2026-09-23 fa-11 was found
-seventy hours into an attempt that had stopped after sixty-six minutes. The ceiling is what
-catches the next way nobody has thought of yet. Six hours is three times the longest real
-attempt measured that week; one that hits it is relaunched under the ordinary attempt cap,
-so genuinely long work loses its context, not its worktree."""
+Not a runtime cap. A monitoring job or a long small task may run for days and should, as
+long as it keeps reporting. What this catches is the opposite: on 2026-09-23 fa-11 was
+found seventy hours into an attempt that went silent after sixty-six minutes, its CPU
+counter moving the whole time. Three hours is past the longest quiet stretch real work
+showed that week, a build queued behind five others on one lock. A session that is
+meant to go quieter than that says so with `quiet_for:` in its frontmatter."""
 
 
 CONTINUATIONS: dict[Verdict, str] = {
@@ -190,14 +191,23 @@ class Scheduler:
                 )
                 continue
 
-            ran = time.time() - it.started_at if it.started_at else 0.0
-            if ran > MAX_RUNTIME_SECONDS:
-                ceiling = f"{MAX_RUNTIME_SECONDS / 3600:g}h"
-                self._stall(it, out, ran, why=f"ran {ran / 3600:.1f}h, past the {ceiling} ceiling")
+            quiet = silent_for(it.session, it.log, paths.STATE)
+            limit = self._quiet_limit(it.session)
+            if quiet is not None and quiet > limit:
+                self._stall(it, out, quiet, why=f"said nothing new for {quiet / 3600:.1f}h")
                 continue
 
+            ran = time.time() - it.started_at if it.started_at else 0.0
             if state is Live.IDLE and ran > IDLE_SECONDS:
                 self._stall(it, out, ran)
+
+    def _quiet_limit(self, session: str) -> float:
+        """The session's own `quiet_for`, or the queue default when it names none."""
+        try:
+            own = sessions.load(sessions.find(self.p.sessions, session)).quiet_for
+        except (FileNotFoundError, ValueError, OSError):
+            own = None
+        return MAX_SILENCE_SECONDS if own is None else own
 
     def _stall(self, it: Item, out: Outcome, quiet: float, why: str | None = None) -> None:
         # ⚠ Stop it before replacing it. Requeueing a live session leaves the old agent

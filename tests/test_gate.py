@@ -324,3 +324,27 @@ def test_a_fix_session_with_no_pr_is_never_mistaken_for_a_finished_walk(tmp_path
     assert r.walk is False
     assert r.walk_done is False
     assert r.verdict is None
+
+
+@pytest.mark.parametrize(
+    "value, seconds",
+    [
+        ("90m", 5400),
+        ("6h", 21600),
+        ("2d", 172800),
+        (6, 21600),
+        ("never", float("inf")),
+        (None, None),
+    ],
+)
+def test_quiet_for_reads_the_durations_a_person_would_write(tmp_path, value, seconds):
+    from fleet import session
+
+    assert session._duration(value, tmp_path / "x.md") == seconds
+
+
+def test_a_quiet_for_that_is_not_a_duration_says_so(tmp_path):
+    from fleet import session
+
+    with pytest.raises(ValueError, match="quiet_for"):
+        session._duration("soonish", tmp_path / "x.md")

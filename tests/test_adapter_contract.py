@@ -474,3 +474,32 @@ def test_agy_liveness_leaves_working_alone_when_it_cannot_find_the_conversation(
     monkeypatch.setattr(runners, "liveness", lambda *a, **k: State.WORKING)
     h = Handle("agy", "ux-9", 1, account="a1", tmux="ux-9-a1", log=None)
     assert runners.Agy().liveness(h) is State.WORKING
+
+
+# --- silence is remembered, not re-derived each tick ------------------------------------
+
+
+def test_silence_is_measured_from_the_last_new_text_not_the_last_look(tmp_path, monkeypatch):
+    from fleet.adapters import shell
+
+    log = tmp_path / "s.log"
+    log.write_text("started", encoding="utf-8")
+    clock = [1000.0]
+    monkeypatch.setattr(shell.time, "time", lambda: clock[0])
+    assert shell.silent_for("s", str(log), tmp_path) is None, "first look is a baseline"
+    clock[0] += 3600
+    assert shell.silent_for("s", str(log), tmp_path) == 3600
+    clock[0] += 3600
+    assert shell.silent_for("s", str(log), tmp_path) == 7200, "looking again resets nothing"
+    log.write_text("started\nran the build", encoding="utf-8")
+    clock[0] += 60
+    assert shell.silent_for("s", str(log), tmp_path) == 0.0
+    log.write_text("started\nran the build\x1b[>4;2m\x1b[2K", encoding="utf-8")
+    clock[0] += 600
+    assert shell.silent_for("s", str(log), tmp_path) == 600, "a redraw is not speech"
+
+
+def test_a_session_with_no_log_is_never_judged_silent(tmp_path):
+    from fleet.adapters import shell
+
+    assert shell.silent_for("s", None, tmp_path) is None

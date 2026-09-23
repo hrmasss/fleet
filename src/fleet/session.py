@@ -42,6 +42,11 @@ class Session:
     kind: str
     criteria: tuple[Criterion, ...]
     title: str = ""
+    quiet_for: float | None = None
+    """Seconds this session may go without new output before it counts as stuck.
+
+    `None` takes the queue's default. `float('inf')` is `quiet_for: never`, for a
+    watcher that is expected to sit silent until something happens."""
 
     @property
     def unticked(self) -> tuple[Criterion, ...]:
@@ -130,7 +135,30 @@ def parse(text: str, path: Path) -> Session:
         kind=str(meta.get("kind") or "fix").strip().lower(),
         criteria=criteria,
         title=str(meta.get("title") or ""),
+        quiet_for=_duration(meta.get("quiet_for"), path),
     )
+
+
+def _duration(value: object, path: Path) -> float | None:
+    """`90m`, `6h`, `2d` or `never` into seconds. A bare number is hours.
+
+    Hours for a bare number because that is the unit anyone reaches for when saying how
+    long a job may go quiet; seconds would make `quiet_for: 6` a six-second leash.
+    """
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    if text in {"never", "none", "off", "inf"}:
+        return float("inf")
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        if text[-1] in units:
+            return float(text[:-1]) * units[text[-1]]
+        return float(text) * 3600
+    except (ValueError, IndexError) as e:
+        raise ValueError(
+            f"{path.name}: quiet_for {value!r} is not a duration like 90m, 6h or never"
+        ) from e
 
 
 def load(path: Path) -> Session:
